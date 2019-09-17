@@ -19,9 +19,7 @@ Example
 
 XXX: define vmod-leastconn interface
 
-$Function STRING hello()
 $Object director()
-$Method STRING .hello()
 $Method BACKEND .backend()
 $Method VOID .add_backend(BACKEND)
 

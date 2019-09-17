@@ -5,7 +5,7 @@
 #include <cache/cache.h>
 #include <cache/cache_director.h>
 #include <cache/cache_backend.h>
-#include <syslog.h>
+#include <limits.h>
 
 #include "vcc_leastconn_if.h"
 
@@ -18,12 +18,6 @@ struct vmod_leastconn_director {
   unsigned                   backends_size;
   VCL_BACKEND                *backends;
 };
-
-VCL_STRING vmod_hello(VRT_CTX)
-{
-  CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
-  return ("Hello World!");
-}
 
 static unsigned v_matchproto_(vdi_healthy)
 vmod_director_healthy(const struct director *director, const struct busyobj *busy_object, double *changed)
@@ -59,21 +53,39 @@ vmod_director_healthy(const struct director *director, const struct busyobj *bus
 static const struct director * v_matchproto_(vdi_resolve_f)
 vmod_director_resolve(const struct director *director, struct worker *worker, struct busyobj *busy_object)
 {
-  unsigned conn_count;
+  unsigned backend_index;
   struct vmod_leastconn_director *lcd;
   struct backend *backend;
+  unsigned selected_index = 0;
+  unsigned least_connections = UINT_MAX;
   
   CHECK_OBJ_NOTNULL(director, DIRECTOR_MAGIC);
   CHECK_OBJ_NOTNULL(worker, WORKER_MAGIC);
   CHECK_OBJ_NOTNULL(busy_object, BUSYOBJ_MAGIC);
   CAST_OBJ_NOTNULL(lcd, director->priv, VMOD_LEASTCONN_DIRECTOR_MAGIC);
-  CAST_OBJ_NOTNULL(backend, lcd->backends[0]->priv, BACKEND_MAGIC);
   
-  Lck_Lock(&backend->mtx);
-  syslog(LOG_ERR, "FOOBAR: %s (%u)\n", lcd->backends[0]->name, backend->n_conn);
-  Lck_Unlock(&backend->mtx);
+  for (backend_index = 0; backend_index < lcd->backends_count; backend_index++)
+  {
+    unsigned healthy;
+    unsigned connections;
+    
+    CAST_OBJ_NOTNULL(backend, lcd->backends[backend_index]->priv, BACKEND_MAGIC);
+    healthy = lcd->backends[backend_index]->healthy(lcd->backends[backend_index], busy_object, NULL);
+    if (!healthy) {
+      continue;
+    }
+    
+    Lck_Lock(&backend->mtx);
+    connections = backend->n_conn;
+    Lck_Unlock(&backend->mtx);
+    
+    if (connections <= least_connections) {
+      selected_index = backend_index;
+      least_connections = connections;
+    }
+  }
   
-  return lcd->backends[0];
+  return lcd->backends[selected_index];
 }
 
 VCL_VOID vmod_director__init(VRT_CTX, struct vmod_leastconn_director **pointer, const char *name)
@@ -112,12 +124,6 @@ VCL_VOID vmod_director__fini(struct vmod_leastconn_director **pointer)
   FREE_OBJ(lcd->director);
   FREE_OBJ(lcd);
 }
-
-VCL_STRING vmod_director_hello(VRT_CTX, struct vmod_leastconn_director *lcd)
-{
-  return ("Hello again!");
-}
-
 
 VCL_VOID vmod_director_add_backend(VRT_CTX, struct vmod_leastconn_director *lcd, VCL_BACKEND backend)
 {
