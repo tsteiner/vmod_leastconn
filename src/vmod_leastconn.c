@@ -16,6 +16,7 @@ struct vmod_leastconn_director {
   struct director            *director;
   unsigned                   backends_count;
   unsigned                   backends_size;
+  unsigned                   last_backend_selected;
   VCL_BACKEND                *backends;
 };
 
@@ -56,7 +57,7 @@ vmod_director_resolve(const struct director *director, struct worker *worker, st
   unsigned backend_index;
   struct vmod_leastconn_director *lcd;
   struct backend *backend;
-  unsigned selected_index = 0;
+  unsigned selected_offset;
   unsigned least_connections = UINT_MAX;
   
   CHECK_OBJ_NOTNULL(director, DIRECTOR_MAGIC);
@@ -64,13 +65,17 @@ vmod_director_resolve(const struct director *director, struct worker *worker, st
   CHECK_OBJ_NOTNULL(busy_object, BUSYOBJ_MAGIC);
   CAST_OBJ_NOTNULL(lcd, director->priv, VMOD_LEASTCONN_DIRECTOR_MAGIC);
   
+  AZ(pthread_rwlock_wrlock(&lcd->mutex));
   for (backend_index = 0; backend_index < lcd->backends_count; backend_index++)
   {
     unsigned healthy;
     unsigned connections;
+    unsigned backend_offset;
     
-    CAST_OBJ_NOTNULL(backend, lcd->backends[backend_index]->priv, BACKEND_MAGIC);
-    healthy = lcd->backends[backend_index]->healthy(lcd->backends[backend_index], busy_object, NULL);
+    backend_offset = (backend_index + lcd->last_backend_selected + 1) % lcd->backends_count;
+    
+    CAST_OBJ_NOTNULL(backend, lcd->backends[backend_offset]->priv, BACKEND_MAGIC);
+    healthy = lcd->backends[backend_offset]->healthy(lcd->backends[backend_offset], busy_object, NULL);
     if (!healthy) {
       continue;
     }
@@ -79,13 +84,16 @@ vmod_director_resolve(const struct director *director, struct worker *worker, st
     connections = backend->n_conn;
     Lck_Unlock(&backend->mtx);
     
-    if (connections <= least_connections) {
-      selected_index = backend_index;
+    if (connections < least_connections) {
+      selected_offset = backend_offset;
       least_connections = connections;
     }
   }
   
-  return lcd->backends[selected_index];
+  lcd->last_backend_selected = selected_offset;
+  AZ(pthread_rwlock_unlock(&lcd->mutex));
+  
+  return lcd->backends[selected_offset];
 }
 
 VCL_VOID vmod_director__init(VRT_CTX, struct vmod_leastconn_director **pointer, const char *name)
@@ -106,7 +114,7 @@ VCL_VOID vmod_director__init(VRT_CTX, struct vmod_leastconn_director **pointer, 
   lcd->director->healthy = vmod_director_healthy;
   lcd->director->resolve = vmod_director_resolve;
   lcd->director->admin_health = VDI_AH_HEALTHY;
-  
+  lcd->last_backend_selected = 0;
 }
 
 VCL_VOID vmod_director__fini(struct vmod_leastconn_director **pointer)
