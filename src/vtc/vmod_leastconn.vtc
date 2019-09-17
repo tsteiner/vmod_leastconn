@@ -1,0 +1,21 @@
+varnishtest "test vmod-leastconn"
+
+server s1 {
+	rxreq
+	txresp
+} -start
+
+varnish v1 -vcl+backend {
+        import leastconn;
+
+        sub vcl_deliver {
+	    set resp.http.Hello = leastconn.hello();
+        }
+} -start
+
+client c1 {
+	txreq
+	rxresp
+	expect resp.status == 200
+	expect resp.http.Hello == "vmod-leastconn"
+} -run
